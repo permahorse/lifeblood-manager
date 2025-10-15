@@ -1309,13 +1309,13 @@ impl InstallationsData {
     /// installs pip with get-pip.py special script from pypi
     ///
     fn helper_prepare_windows_venv(dest_dir: &Path) -> Result<(), Error> {
-        let pyver = "3.10.9"; // TODO: do not hardcode
+        let pyver = "3.10.11"; // TODO: do not hardcode
         let pycode = "310";
         //
 
         let pyzip = Self::helper_download_single_file(
             &format!(
-                "https://www.python.org/ftp/python/{}/python-{}-embed-win32.zip",
+                "https://www.python.org/ftp/python/{}/python-{}-embed-amd64.zip",
                 pyver, pyver
             ),
             &dest_dir,
