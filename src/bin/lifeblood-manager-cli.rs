@@ -1,5 +1,5 @@
 use lifeblood_manager::installation_helpers::get_python_command;
-use lifeblood_manager::{InstallationsData, BUILD_INFO};
+use lifeblood_manager::{InstallationsData, BUILD_INFO, VenvPythonOption};
 use std::{
     env::{self, Args},
     io::Error,
@@ -85,6 +85,7 @@ enum InstallArgsListParsingState {
 enum InstallArgsNewParsingState {
     ExpectPathOrFlag,
     ExpectingBranch,
+    ExpectingEmbeddedPythonVer,
     NotExpectingAnything,
 }
 
@@ -146,6 +147,7 @@ fn process_installs_list(args: Args) -> Result<(), Error> {
 fn process_installs_new(args: Args) -> Result<(), Error> {
     let mut state = InstallArgsNewParsingState::ExpectPathOrFlag;
     let mut branch = "dev".to_owned();
+    let mut embedded_python_ver = None;
     let mut base_path = PathBuf::from(".");
     let mut do_viewer = true;
     let mut ignore_system_python = false;
@@ -165,12 +167,21 @@ fn process_installs_new(args: Args) -> Result<(), Error> {
                 ignore_system_python = true;
                 state = InstallArgsNewParsingState::ExpectPathOrFlag;
             }
+            (InstallArgsNewParsingState::ExpectPathOrFlag, arg)
+                if arg == "--embedded-python" =>
+            {
+                state = InstallArgsNewParsingState::ExpectingEmbeddedPythonVer;
+            }
             (InstallArgsNewParsingState::ExpectPathOrFlag, arg) => {
                 base_path = PathBuf::from(arg);
                 state = InstallArgsNewParsingState::NotExpectingAnything;
             }
             (InstallArgsNewParsingState::ExpectingBranch, arg) => {
                 branch = arg;
+                state = InstallArgsNewParsingState::ExpectPathOrFlag;
+            }
+            (InstallArgsNewParsingState::ExpectingEmbeddedPythonVer, arg) => {
+                embedded_python_ver = Some(arg);
                 state = InstallArgsNewParsingState::ExpectPathOrFlag;
             }
             (InstallArgsNewParsingState::NotExpectingAnything, _) => {
@@ -181,16 +192,30 @@ fn process_installs_new(args: Args) -> Result<(), Error> {
         }
     }
 
-    let path_to_python = if ignore_system_python {
-        None
+    let venv_python_option = if ignore_system_python {
+        if let Some(ver) = embedded_python_ver {
+            VenvPythonOption::Embedded(ver)
+        } else {
+            eprintln!("when using --ignore-system-python flag, --embedded-python must also be provided");
+            return Err(Error::new(std::io::ErrorKind::InvalidData, "embedded python not provided"))
+        }
     } else {
-        get_python_command()
+        if let Some(python_path) = get_python_command() {
+            VenvPythonOption::Existing(python_path)
+        } else {
+            if let Some(ver) = embedded_python_ver {
+                VenvPythonOption::Embedded(ver)
+            } else {
+                eprintln!("system python not found, and --embedded-python not provided");
+                return Err(Error::new(std::io::ErrorKind::InvalidData, "system python not found, embedded python not provided"))
+            }
+        }
     };
 
     let mut installs = help_get_installs_from_dir(base_path);
 
     let new_ver_index =
-        match installs.download_new_version(&branch, do_viewer, path_to_python.as_deref()) {
+        match installs.download_new_version(&branch, do_viewer, &venv_python_option) {
             Ok(i) => {
                 println!("New version downloaded");
                 i
