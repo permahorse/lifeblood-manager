@@ -7,6 +7,7 @@ use crate::tray_manager::TrayManager;
 use crate::widgets::{Widget, WidgetCallbacks};
 use crate::wizard::{Wizard, WizardForToolsOnly};
 use crate::InstallationsData;
+use crate::VenvPythonOption;
 use fltk::button::CheckButton;
 use fltk::dialog;
 use fltk::misc::InputChoice;
@@ -16,6 +17,7 @@ use fltk::{
     draw, enums,
     frame::Frame,
     group::Flex,
+    menu::Choice,
     prelude::*,
     table::{Table, TableContext},
 };
@@ -159,11 +161,12 @@ impl Widget for InstallationWidget {
 
         // buttons
         let mut control_buttons_group_vertical = Flex::default().column();
-        flex.fixed(&control_buttons_group_vertical, 2 * ITEM_HEIGHT);
+        flex.fixed(&control_buttons_group_vertical, 3 * (ITEM_HEIGHT + 4));  // 3 rows, 4px u+l padding
 
+        // first row with control buttons
         let mut upper_control_row = Flex::default().row();
         control_buttons_group_vertical.fixed(&upper_control_row, ITEM_HEIGHT);
-        let ignore_system_python_checkbox =
+        let mut ignore_system_python_checkbox =
             CheckButton::default().with_label("ignore system python");
         let mut wizard_button = Button::default().with_label("Config Wizard");
         wizard_button.set_tooltip("The wizard that will create configuration and install/update DCC submission tools");
@@ -172,6 +175,17 @@ impl Widget for InstallationWidget {
         tools_only_wizard_button.set_tooltip("The wizard to only install/update DCC submission tools");
         upper_control_row.end();
 
+        // middle row with control buttons
+        let mut second_control_row = Flex::default().row();
+        control_buttons_group_vertical.fixed(&second_control_row, ITEM_HEIGHT);
+        let mut embedded_python_version_label = Frame::default().with_label("Python");
+        second_control_row.fixed(&embedded_python_version_label, 80);
+        let mut embedded_python_version_combobox = Choice::default();
+        second_control_row.fixed(&embedded_python_version_combobox, 100);
+        Frame::default_fill();
+        second_control_row.end();
+
+        // last row with control buttons
         let mut version_control_flex = Flex::default().row();
         control_buttons_group_vertical.fixed(&version_control_flex, ITEM_HEIGHT);
         let mut new_install_btn = Button::default().with_label("download freshest");
@@ -203,6 +217,21 @@ impl Widget for InstallationWidget {
         //
         // callbacks
         //
+
+        // ignore system python checkbox callback
+        ignore_system_python_checkbox.set_callback({
+            let mut embedded_python_version_label = embedded_python_version_label.clone();
+            let mut embedded_python_version_combobox = embedded_python_version_combobox.clone();
+            move |wgt| {
+                if wgt.is_checked() {
+                    embedded_python_version_label.activate();
+                    embedded_python_version_combobox.activate();
+                } else {
+                    embedded_python_version_label.deactivate();
+                    embedded_python_version_combobox.deactivate();
+                }
+            }
+        });
 
         // table draw callback
         let widget_to_cb = widget.clone();
@@ -406,112 +435,130 @@ impl Widget for InstallationWidget {
         });
 
         // download freshhhh
-        let widget_to_cb = widget.clone();
-        new_install_btn.set_callback(move |btn| {
-            let branch = match branch_selector.value() {
-                Some(x) => x,
-                None => DEFAULT_BRANCH.to_owned(),
-            };
-            let ignore_system_python = ignore_system_python_checkbox.value();
-            let mut installation_succeeded = true;
+        new_install_btn.set_callback({
+            let widget_to_cb = widget.clone();
+            let ignore_system_python_checkbox = ignore_system_python_checkbox.clone();
+            let embedded_python_version_combobox = embedded_python_version_combobox.clone();
+            move |btn| {
+                let branch = match branch_selector.value() {
+                    Some(x) => x,
+                    None => DEFAULT_BRANCH.to_owned(),
+                };
+                let ignore_system_python = ignore_system_python_checkbox.value();
+                let embed_python_ver = embedded_python_version_combobox.choice();
+                let mut installation_succeeded = true;
 
-            #[cfg(windows)]
-            let mut hide_console_after = false;
-            #[cfg(windows)]
-            if !window::is_visible() {
-                hide_console_after = true;
-                window::activate(true);
-            }
+                #[cfg(windows)]
+                let mut hide_console_after = false;
+                #[cfg(windows)]
+                if !window::is_visible() {
+                    hide_console_after = true;
+                    window::activate(true);
+                }
 
-            thread::scope(|scope| {
-                let handle = scope.spawn(|| {
-                    let guard = &mut widget_to_cb.lock().unwrap();
-                    match guard.install_data {
-                        Some(ref mut mutexed_data) => {
-                            let mut data = lock_install_data(&mutexed_data);
-                            // if checkbox is set - we don't try to locate python
-                            println!("initiating new version installation");
-                            let path_to_python = if ignore_system_python {
-                                None
-                            } else {
-                                get_python_command()
-                            };
+                thread::scope(|scope| {
+                    let handle = scope.spawn(|| {
+                        let guard = &mut widget_to_cb.lock().unwrap();
+                        match guard.install_data {
+                            Some(ref mut mutexed_data) => {
+                                let mut data = lock_install_data(&mutexed_data);
+                                // if checkbox is set - we don't try to locate python
+                                println!("initiating new version installation");
+                                let venv_python = if ignore_system_python {
+                                    if let Some(ver) = embed_python_ver{
+                                        VenvPythonOption::Embedded(ver)
+                                    } else {
+                                        return Err(format!("No Embedded Python specified"));
+                                    }
+                                } else {
+                                    if let Some(path) = get_python_command() {
+                                        VenvPythonOption::Existing(path)
+                                    } else {
+                                        return Err(format!("No Python specified"));
+                                    }
+                                };
 
-                            if let Some(ref path) = path_to_python {
-                                println!("using python: {:?}", path);
-                            }
-
-                            // download latest
-                            let new_ver = match data.download_new_version(
-                                &branch,
-                                true,
-                                path_to_python.as_deref(),
-                            ) {
-                                Ok(idx) => {
-                                    // TODO: result process somehow
-                                    idx
+                                match &venv_python {
+                                    VenvPythonOption::Embedded(ver) => {
+                                        println!("using embedded python: {}", ver);
+                                    }
+                                    VenvPythonOption::Existing(path) => {
+                                        println!("using python: {:?}", path);
+                                    }
                                 }
-                                Err(e) => {
-                                    let err_msg = format!("failed to install new version: {}", e);
-                                    return Err(err_msg);
+
+                                // download latest
+                                let new_ver = match data.download_new_version(
+                                    &branch,
+                                    true,
+                                    &venv_python,
+                                ) {
+                                    Ok(idx) => {
+                                        // TODO: result process somehow
+                                        idx
+                                    }
+                                    Err(e) => {
+                                        let err_msg = format!("failed to install new version: {}", e);
+                                        return Err(err_msg);
+                                    }
+                                };
+                                // make current
+                                if let Err(e) = data.make_version_current(new_ver) {
+                                    let err_msg = format!("failed to make new version current: {}", e);
+                                    eprintln!("Warning: {}", err_msg);
                                 }
-                            };
-                            // make current
-                            if let Err(e) = data.make_version_current(new_ver) {
-                                let err_msg = format!("failed to make new version current: {}", e);
-                                eprintln!("Warning: {}", err_msg);
                             }
+                            _ => (),
+                        }
+                        Ok(())
+                    });
+
+                    let btn_text = btn.label();
+                    let mut anim_frame = 0;
+                    // poll and keep UI responsive
+                    while !handle.is_finished() {
+                        btn.set_label(DOWNLOAD_LABEL_ANIM[anim_frame]);
+                        anim_frame = (anim_frame + 1) % DOWNLOAD_LABEL_ANIM.len();
+                        app::check();
+                        // app::flush();
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                    btn.set_label(&btn_text);
+
+                    // join
+                    match handle.join() {
+                        Ok(Err(err_msg)) => {
+                            installation_succeeded = false;
+                            eprintln!("{}", err_msg);
+                            let wind = btn.window().unwrap();
+                            InfoDialog::show(
+                                wind.x() + (wind.w() / 2) as i32 - 300,
+                                wind.y() + (wind.h() / 2) as i32 - 100,
+                                "error",
+                                &err_msg,
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("thead join failed! {:?}", e);
                         }
                         _ => (),
                     }
-                    Ok(())
                 });
 
-                let btn_text = btn.label();
-                let mut anim_frame = 0;
-                // poll and keep UI responsive
-                while !handle.is_finished() {
-                    btn.set_label(DOWNLOAD_LABEL_ANIM[anim_frame]);
-                    anim_frame = (anim_frame + 1) % DOWNLOAD_LABEL_ANIM.len();
-                    app::check();
-                    // app::flush();
-                    std::thread::sleep(Duration::from_millis(100));
+                widget_to_cb.lock().unwrap().update_installation_table();
+
+                #[cfg(windows)]
+                if hide_console_after {
+                    window::hide();
                 }
-                btn.set_label(&btn_text);
 
-                // join
-                match handle.join() {
-                    Ok(Err(err_msg)) => {
-                        installation_succeeded = false;
-                        eprintln!("{}", err_msg);
-                        let wind = btn.window().unwrap();
-                        InfoDialog::show(
-                            wind.x() + (wind.w() / 2) as i32 - 300,
-                            wind.y() + (wind.h() / 2) as i32 - 100,
-                            "error",
-                            &err_msg,
-                        );
+                // if conditions are met - also run wizard
+                if installation_succeeded {
+                    let config_root = ConfigDataCollection::default_config_location();
+                    if !config_root.exists() {
+                        let mut wizard = Wizard::new(config_root);
+                        wizard.run();
                     }
-                    Err(e) => {
-                        eprintln!("thead join failed! {:?}", e);
-                    }
-                    _ => (),
-                }
-            });
-
-            widget_to_cb.lock().unwrap().update_installation_table();
-
-            #[cfg(windows)]
-            if hide_console_after {
-                window::hide();
-            }
-
-            // if conditions are met - also run wizard
-            if installation_succeeded {
-                let config_root = ConfigDataCollection::default_config_location();
-                if !config_root.exists() {
-                    let mut wizard = Wizard::new(config_root);
-                    wizard.run();
                 }
             }
         });
@@ -525,6 +572,16 @@ impl Widget for InstallationWidget {
             let mut wizard = WizardForToolsOnly::new();
             wizard.run();
         });
+
+        //
+        // finally, some init values
+        //
+        if cfg!(windows) {
+            embedded_python_version_combobox.add_choice("3.11.9|3.10.11");
+            embedded_python_version_combobox.set_value(0);
+            ignore_system_python_checkbox.set_checked(true);
+        }
+        ignore_system_python_checkbox.do_callback();
 
         (widget, tab_header)
     }
