@@ -38,6 +38,11 @@ pub struct InstallationsData {
     base_path_tainted: bool, // true if there is garbage unrelated to lifeblood found in the base_path
 }
 
+pub enum VenvPythonOption {
+    Existing(PathBuf),
+    Embedded(String),
+}
+
 macro_rules! check_status {
     ($exit_status:ident) => {
         if !$exit_status.success() {
@@ -454,7 +459,7 @@ impl InstallationsData {
         &mut self,
         branch_name: &str,
         do_install_viewer: bool,
-        python_to_use: Option<&Path>,
+        python_to_use: &VenvPythonOption,
     ) -> Result<usize, Error> {
         macro_rules! noop {
             ($($t:tt)*) => {};
@@ -782,7 +787,7 @@ impl InstallationsData {
         unzip_location: &Path,
         dest_dir: &Path,
         do_install_viewer: bool,
-        python_to_use: Option<&Path>,
+        python_to_use: &VenvPythonOption,
     ) -> Result<(), Error> {
         let mut existing_dest: Option<PathBuf> = None;
 
@@ -912,21 +917,53 @@ impl InstallationsData {
             )
         );
 
-        // Self::helper_get_python_command(supported_python_versions)
-        if let Some(python_command) = python_to_use {
-            if let Ok(true) = Self::helper_is_python_version_supported(python_command, &supported_python_versions) {
-            } else {
-                return Err(Error::new(
-                    std::io::ErrorKind::Unsupported,
-                    format!(
-                        "given python version is not supported. supported: {}",
-                        supported_python_versions
-                            .iter()
-                            .map(|x| format!("{}.{}", x.0, x.1))
-                            .collect::<Vec<String>>()
-                            .join(", ")
-                    ),
-                ))
+        // check if given python is supported
+        let supported_python_versions_text = supported_python_versions
+            .iter()
+            .map(|x| format!("{}.{}", x.0, x.1))
+            .collect::<Vec<String>>()
+            .join(", ");
+        match python_to_use {
+            VenvPythonOption::Existing(ref python_command) => {
+                if let Ok(true) = Self::helper_is_python_version_supported(python_command, &supported_python_versions) {
+                } else {
+                    return Err(Error::new(
+                        std::io::ErrorKind::Unsupported,
+                        format!(
+                            "given python version is not supported. supported: {}",
+                            supported_python_versions_text
+                        ),
+                    ))
+                }
+            }
+            VenvPythonOption::Embedded(ref embedded_ver) => {
+                if !embedded_ver.contains('.') {
+                    return Err(Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("incorrect python version provided. must be at least 2 numbers divided by a dot"),
+                    ));
+                }
+                let mut ver = Vec::with_capacity(2);
+                for part in embedded_ver.split('.').take(2).map(|x| u32::from_str_radix(x, 10)){
+                    if let Ok(x) = part {
+                        ver.push(x);
+                    } else {
+                        return Err(Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("incorrect python version provided. must be at least 2 numbers divided by a dot"),
+                        ));
+                    }
+                }
+                let ver = (ver[0], ver[1]);
+                if let None = supported_python_versions.iter().find(|&x| *x == ver){
+                    return Err(Error::new(
+                        std::io::ErrorKind::Unsupported,
+                        format!(
+                            "given embedded python version is not supported. supported: {}",
+                            supported_python_versions_text
+                        ),
+                    ))
+                }
             }
         }
 
@@ -1185,7 +1222,7 @@ impl InstallationsData {
     /// it will be downloaded, minimal python venv will be handcrafted,
     /// get_pip will be used to get pip
     ///
-    fn helper_install_venv(dest_dir: &Path, requirements_path: &Path, python_to_use: Option<&Path>) -> Result<(), Error> {
+    fn helper_install_venv(dest_dir: &Path, requirements_path: &Path, python_to_use: &VenvPythonOption) -> Result<(), Error> {
         // if venv dir is present - skip creating venv
 
         // in case of windows and "verbatim" paths - it seems that some parts of python,
@@ -1196,17 +1233,20 @@ impl InstallationsData {
         let venv_pybin_path = Self::helper_get_venv_relative_python_bin_path(dest_dir);
 
         if !dest_dir.join("venv").exists() {
-            if let Some(python_command) = python_to_use {
-                Self::helper_initialize_venv(dest_dir, &python_command)?;
-            } else {
-                // python not found, but we know what to do on windows in this case
-                if cfg!(windows) {
-                    Self::helper_prepare_windows_venv(dest_dir)?
-                } else {
-                    return Err(Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "python cannot be automatically installed on this platform. Please install python system-wide or provide a custom one with PYTHON_BIN",
-                    ));
+            match python_to_use {
+                VenvPythonOption::Existing(ref python_command) => {
+                    Self::helper_initialize_venv(dest_dir, python_command)?;
+                }
+                VenvPythonOption::Embedded(ref version) => {
+                    // python not found, but we know what to do on windows in this case
+                    if cfg!(windows) {
+                        Self::helper_prepare_windows_venv(dest_dir, version)?
+                    } else {
+                        return Err(Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "python cannot be automatically installed on this platform. Please install python system-wide or provide a custom one with PYTHON_BIN",
+                        ));
+                    }
                 }
             }
         }
@@ -1308,14 +1348,14 @@ impl InstallationsData {
     /// manually creates bare minimum for python to understand it's in venv
     /// installs pip with get-pip.py special script from pypi
     ///
-    fn helper_prepare_windows_venv(dest_dir: &Path) -> Result<(), Error> {
-        let pyver = "3.10.9"; // TODO: do not hardcode
-        let pycode = "310";
+    fn helper_prepare_windows_venv(dest_dir: &Path, pyver: &str) -> Result<(), Error> {
+        // pyver is of form "3.10.11", pycode form it is "310"
+        let pycode = pyver.split(".").take(2).collect::<Vec<&str>>().join("");
         //
 
         let pyzip = Self::helper_download_single_file(
             &format!(
-                "https://www.python.org/ftp/python/{}/python-{}-embed-win32.zip",
+                "https://www.python.org/ftp/python/{}/python-{}-embed-amd64.zip",
                 pyver, pyver
             ),
             &dest_dir,
