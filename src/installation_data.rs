@@ -917,21 +917,53 @@ impl InstallationsData {
             )
         );
 
-        // Self::helper_get_python_command(supported_python_versions)
-        if let VenvPythonOption::Existing(ref python_command) = python_to_use {
-            if let Ok(true) = Self::helper_is_python_version_supported(python_command, &supported_python_versions) {
-            } else {
-                return Err(Error::new(
-                    std::io::ErrorKind::Unsupported,
-                    format!(
-                        "given python version is not supported. supported: {}",
-                        supported_python_versions
-                            .iter()
-                            .map(|x| format!("{}.{}", x.0, x.1))
-                            .collect::<Vec<String>>()
-                            .join(", ")
-                    ),
-                ))
+        // check if given python is supported
+        let supported_python_versions_text = supported_python_versions
+            .iter()
+            .map(|x| format!("{}.{}", x.0, x.1))
+            .collect::<Vec<String>>()
+            .join(", ");
+        match python_to_use {
+            VenvPythonOption::Existing(ref python_command) => {
+                if let Ok(true) = Self::helper_is_python_version_supported(python_command, &supported_python_versions) {
+                } else {
+                    return Err(Error::new(
+                        std::io::ErrorKind::Unsupported,
+                        format!(
+                            "given python version is not supported. supported: {}",
+                            supported_python_versions_text
+                        ),
+                    ))
+                }
+            }
+            VenvPythonOption::Embedded(ref embedded_ver) => {
+                if !embedded_ver.contains('.') {
+                    return Err(Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("incorrect python version provided. must be at least 2 numbers divided by a dot"),
+                    ));
+                }
+                let mut ver = Vec::with_capacity(2);
+                for part in embedded_ver.split('.').take(2).map(|x| u32::from_str_radix(x, 10)){
+                    if let Ok(x) = part {
+                        ver.push(x);
+                    } else {
+                        return Err(Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("incorrect python version provided. must be at least 2 numbers divided by a dot"),
+                        ));
+                    }
+                }
+                let ver = (ver[0], ver[1]);
+                if let None = supported_python_versions.iter().find(|&x| *x == ver){
+                    return Err(Error::new(
+                        std::io::ErrorKind::Unsupported,
+                        format!(
+                            "given embedded python version is not supported. supported: {}",
+                            supported_python_versions_text
+                        ),
+                    ))
+                }
             }
         }
 
