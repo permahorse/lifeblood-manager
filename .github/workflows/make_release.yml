@@ -21,7 +21,7 @@ jobs:
       fail-fast: false
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
@@ -62,7 +62,7 @@ jobs:
       - run: ls -R artifacts
 
       - name: Make Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         # if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
