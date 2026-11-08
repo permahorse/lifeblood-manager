@@ -577,7 +577,7 @@ impl Widget for InstallationWidget {
         // finally, some init values
         //
         if cfg!(windows) {
-            embedded_python_version_combobox.add_choice("3.11.9|3.10.11");
+            embedded_python_version_combobox.add_choice("3.13.17|3.11.9|3.10.11");
             embedded_python_version_combobox.set_value(0);
             ignore_system_python_checkbox.set_checked(true);
         }
